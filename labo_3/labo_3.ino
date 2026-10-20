@@ -182,15 +182,15 @@ void allerDroit(short speed = 100, short firstRun = 0) {
     gyro.resetData();
     zAngleGoal = gyro.getAngleZ();
     firstRun = 0;
-    Encoder_1.setTarPWM(speed);
-    Encoder_2.setTarPWM(-speed);
+    Encoder_1.setTarPWM(-speed);
+    Encoder_2.setTarPWM(speed);
     return;
   }
   error = gyro.getAngleZ() - zAngleGoal;
   output = kp * error + kd * (error - previousError);
   previousError = error;
-  Encoder_1.setMotorPwm(speed - output);
-  Encoder_2.setMotorPwm(-speed - output);
+  Encoder_1.setMotorPwm(-speed - output);
+  Encoder_2.setMotorPwm(speed - output);
 }
 
 void debutSegment(float distanceCm) {
