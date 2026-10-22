@@ -41,12 +41,19 @@ bool enMarche = false;
 bool termine = false;
 bool lecture = false;
 bool pivotStart = false;
+bool pivotFini = false;
 unsigned long debutEtat = 0;
 
 const int pwmDroit = 100;
 long start1 = 0, start2 = 0;
 long cibleDeg = 0;
+int dernierNbLed = -1;
 
+float distA = 120, distB = 0, distC = 120;
+
+const int avantDernierChiffre = 0;
+const int sensPivot = (avantDernierChiffre % 2 == 0) ? 1 : -1;
+int pwmPivot = 60;
 enum state {
   DEPART,
   SEG_A,
@@ -55,7 +62,13 @@ enum state {
   REVERSE,
   SEG_C,
   DEMI_TOUR,
-  FIN
+  SEG_RET,
+  PIVOT_RET,
+  SEG_FINAL1,
+  PIVOT_FINAL,
+  SEG_FINAL,
+  FIN,
+  POS_DEPART
 } currentState = DEPART;
 
 void setup() {
@@ -116,18 +129,21 @@ void isr_process_encoder2(void) {
 float distanceToTicks(float distance) {
   return (long)(distance / (PI * diametre_roue) * 360);
 }
-bool mouvementTermine() {
+
+/*bool mouvementTermine() {
   return Encoder_1.isTarPosReached() && Encoder_2.isTarPosReached();
-}
+}*/
 
 void changerEtat(state etatSuivant) {
   currentState = etatSuivant;
   debutEtat = currentTime;
   flag = false;
   pivotStart = false;
+  pivotFini = false;
   enMarche = false;
   termine = false;
   lecture = false;
+  dernierNbLed = -1;
 }
 
 void stateManager() {
@@ -137,202 +153,250 @@ void stateManager() {
       if (currentTime - debutEtat >= delay_start) changerEtat(SEG_A);
       break;
     case SEG_A:
-      segment_1(80);
-      lightOn(80);
+      segment_1(distA);
+      lightOn();
       if (termine) changerEtat(PIVOT);
       break;
     case PIVOT:
-      pivot(90);
-      if (pivotStart && mouvementTermine()) changerEtat(SEG_B);
+      pivot(90, sensPivot);
+      if (pivotFini) changerEtat(SEG_B);
       break;
     case SEG_B:
       segment_2();
+      if (enMarche) lightOn();
       if (termine) {
+        distB = enMarche ? cmParcourus() : 0;  // 0 si le segment n'a pas démarré
         changerEtat(REVERSE);
       }
       break;
     case REVERSE:
       pivot_Reverse();
-      if (pivotStart && mouvementTermine()) changerEtat(SEG_C);
+      if (pivotFini) changerEtat(SEG_C);
       break;
     case SEG_C:
-      segment_3();
+      segment_1(distC);
+      lightOn();
       if (termine) changerEtat(DEMI_TOUR);
       break;
     case DEMI_TOUR:
-      semiPivot();
-      if (pivotStart && mouvementTermine()) changerEtat(FIN);
+      pivot(180, 1);
+      if (pivotFini) changerEtat(SEG_RET);
       break;
-    case FIN:
+
+    case SEG_RET:
+      segment_1(distC);
+      if (termine) changerEtat(PIVOT_RET);
+      break;
+    case PIVOT_RET:
+      pivot(90, sensPivot);
+      if (pivotFini) changerEtat(SEG_FINAL1);
+      break;
+    case SEG_FINAL1:  
+      segment_1(distB);
+      if (termine) changerEtat(PIVOT_FINAL);
+      break;
+    case PIVOT_FINAL:  
+      pivot(90, -sensPivot);
+      if (pivotFini) changerEtat(SEG_FINAL);
+      break;
+    case SEG_FINAL:  
+      segment_1(distA);
+      if (termine) changerEtat(POS_DEPART);
+      break;
+    case POS_DEPART:
+    pivot(180, sensPivot);
+     if (termine) changerEtat(FIN);
+    break;
+     case FIN:
       ligneFinale(currentTime);
       break;
   }
-}
-
-void allerDroit(short speed = 100, short firstRun = 0) {
-  static double zAngleGoal = 0.0;
-
-  static double error = 0.0;
-  static double previousError = 0.0;
-  static double output = 0;
-
-  const double kp = 3.0;
-  const double kd = 1.0;
-  if (firstRun) {
-    gyro.resetData();
-    zAngleGoal = gyro.getAngleZ();
-    firstRun = 0;
-    Encoder_1.setTarPWM(-speed);
-    Encoder_2.setTarPWM(speed);
-    return;
   }
-  error = gyro.getAngleZ() - zAngleGoal;
-  output = kp * error + kd * (error - previousError);
-  previousError = error;
-  Encoder_1.setMotorPwm(-speed - output);
-  Encoder_2.setMotorPwm(speed - output);
-}
 
-void debutSegment(float distanceCm) {
-  cibleDeg = distanceToTicks(distanceCm);
-  start1 = Encoder_1.getCurPos();
-  start2 = Encoder_2.getCurPos();
-  Encoder_1.setMotionMode(PWM_MODE);
-  Encoder_2.setMotionMode(PWM_MODE);
-}
+  void allerDroit(short speed = 100, short firstRun = 0) {
+    static double zAngleGoal = 0.0;
 
-float degresParcourus() {
-  return (abs(Encoder_1.getCurPos() - start1) + abs(Encoder_2.getCurPos() - start2)) / 2.0;
-}
+    static double error = 0.0;
+    static double previousError = 0.0;
+    static double output = 0;
 
-void arreter() {
-  Encoder_1.setMotorPwm(0);
-  Encoder_2.setMotorPwm(0);
-  Encoder_1.setTarPWM(0);
-  Encoder_2.setTarPWM(0);
-}
-
-void segment_1(float distance) {
-  if (!flag) {
-    debutSegment(distance);
-    allerDroit(pwmDroit, 1);
-    flag = true;
-    return;
-  }
-  if (termine) return;
-  if (degresParcourus() >= cibleDeg) {
-    arreter();
-    termine = true;
-    return;
-  }
-  allerDroit(pwmDroit);
-}
-
-
-//modifier avec les nouvelles formules du cours 8
-void pivot(float angle) {
-  if (pivotStart) return;
-  float angleMoteur = (angle * dist_roue) / diametre_roue;
-  Encoder_1.setMotionMode(PID_MODE);
-  Encoder_2.setMotionMode(PID_MODE);
-  Encoder_1.move(angleMoteur, vitesse);
-  Encoder_2.move(angleMoteur, vitesse);
-  pivotStart = true;
-}
-
-float readDistance(unsigned long currentTime) {
-
-  if (currentTime - previousReadTime >= reading_Rate) {
-    previousReadTime = currentTime;
-    float d = ultraSensor.distanceCm();
-    if (d > 0) {
-      distance = d;
-      lecture = true;
+    const double kp = 7.0;
+    const double kd = 10.0;
+    if (firstRun) {
+      gyro.resetData();
+      zAngleGoal = gyro.getAngleZ();
+      previousError = 0.0;
+      Encoder_1.setTarPWM(-speed);
+      Encoder_2.setTarPWM(speed);
+      return;
     }
+    error = gyro.getAngleZ() - zAngleGoal;
+    output = kp * error + kd * (error - previousError);
+    previousError = error;
+    Encoder_1.setMotorPwm(-speed - output);
+    Encoder_2.setMotorPwm(speed - output);
   }
-  return distance;
-}
 
-void segment_2() {
-  if (termine || !lecture) return;
-  if (!enMarche) {
+  void debutSegment(float distanceCm) {
+    cibleDeg = distanceToTicks(distanceCm);
+    start1 = Encoder_1.getCurPos();
+    start2 = Encoder_2.getCurPos();
+    Encoder_1.setMotionMode(PWM_MODE);
+    Encoder_2.setMotionMode(PWM_MODE);
+  }
 
-    float aParcourir = distance - detection_dist;
-    if (aParcourir <= 0) {
+  float degresParcourus() {
+    return (abs(Encoder_1.getCurPos() - start1) + abs(Encoder_2.getCurPos() - start2)) / 2.0;
+  }
+
+  float cmParcourus() {
+    return degresParcourus() / 360.0 * PI * diametre_roue;
+  }
+
+  void arreter() {
+    Encoder_1.setMotorPwm(0);
+    Encoder_2.setMotorPwm(0);
+    Encoder_1.setTarPWM(0);
+    Encoder_2.setTarPWM(0);
+  }
+
+  void segment_1(float distance) {
+    if (!flag) {
+      debutSegment(distance);
+      allerDroit(pwmDroit, 1);
+      flag = true;
+      return;
+    }
+    if (termine) return;
+    if (degresParcourus() >= cibleDeg) {
+      arreter();
       termine = true;
       return;
     }
-    debutSegment(aParcourir);
-    allerDroit(pwmDroit, 1);
-    enMarche = true;
-    return;
+    allerDroit(pwmDroit);
   }
-  if (distance <= detection_dist || degresParcourus() >= cibleDeg) {
-    arreter();
-    termine = true;
-    return;
+
+
+  //modifier avec les nouvelles formules du cours 8
+  void pivot(float angle, int sens) {
+    if (!pivotStart) {
+      gyro.resetData();
+      Encoder_1.setMotionMode(PWM_MODE);
+      Encoder_2.setMotionMode(PWM_MODE);
+      pivotStart = true;
+    }
+    if (pivotFini) return;
+
+    float reste = angle - abs(gyro.getAngleZ());
+    if (reste <= 2.0) {
+      arreter();
+      pivotFini = true;
+      return;
+    }
+    Encoder_1.setMotorPwm(sens * pwmPivot);
+    Encoder_2.setMotorPwm(sens * pwmPivot);
   }
-  allerDroit(pwmDroit);
-}
 
-void pivot_Reverse() {
-}
 
-void segment_3() {
-}
+  float readDistance(unsigned long currentTime) {
 
-void semiPivot() {
-}
+    if (currentTime - previousReadTime >= reading_Rate) {
+      previousReadTime = currentTime;
+      float d = ultraSensor.distanceCm();
+      if (d > 0) {
+        distance = d;
+        lecture = true;
+      }
+    }
+    return distance;
+  }
 
-void ligneFinale(unsigned long currentTime) {
-  if (currentTime - previousTime >= ledDelay) {
-    previousTime = currentTime;
-    ledState = !ledState;
+  void segment_2() {
+    if (termine || !lecture) return;
+    if (!enMarche) {
 
-    for (int i = 7; i < LEDNUM; i++) {
-      if (ledState) {
+      float aParcourir = distance - detection_dist;
+      if (aParcourir <= 0) {
+        termine = true;
+        return;
+      }
+      debutSegment(aParcourir);
+      allerDroit(pwmDroit, 1);
+      enMarche = true;
+      return;
+    }
+    if (distance <= detection_dist || degresParcourus() >= cibleDeg) {
+      arreter();
+      termine = true;
+      return;
+    }
+    allerDroit(pwmDroit);
+  }
+
+  void pivot_Reverse() {
+    pivot(90, -sensPivot);
+  }
+
+  void segment_3() {
+    segment_1(120);
+  }
+  void segment_ret() {
+    segment_1(60);
+  }
+
+  void ligneFinale(unsigned long currentTime) {
+    if (currentTime - previousTime >= ledDelay) {
+      previousTime = currentTime;
+      ledState = !ledState;
+
+      for (int i = 7; i < LEDNUM; i++) {
+        if (ledState) {
+          led.setColorAt(i, 0, 255, 0);
+        } else {
+          led.setColorAt(i, 0, 0, 0);
+        }
+      }
+    }
+    led.show();
+  }
+
+  void lightOn() {
+    if (cibleDeg <= 0) return;
+    // nombre de DEL à allumer (1 à 7) selon l'avancement
+    long pos = abs(Encoder_1.getCurPos() - start1);
+    int ledToLight = map(constrain(pos, 0, cibleDeg), 0, cibleDeg, 0, 7);
+    if (ledToLight == dernierNbLed) return;
+    dernierNbLed = ledToLight;
+    for (int i = 0; i < 7; i++) {
+      if (i <= ledToLight) {
         led.setColorAt(i, 0, 255, 0);
       } else {
         led.setColorAt(i, 0, 0, 0);
       }
     }
+
+    led.show();
   }
-  led.show();
-}
-void lightOn(float distance) {
-  long cible = distanceToTicks(distance);
+  state dernierEtat = (state)-1;
+  void gererLed() {
+    if (currentState == dernierEtat) return;
+    dernierEtat = currentState;
 
-  // nombre de DEL à allumer (1 à 7) selon l'avancement
-  long pos = abs(Encoder_1.getCurPos());
-  int ledToLight = map(constrain(pos, 0, cible), 0, cible, 0, 7);
-
-  for (uint8_t i = 0; i < 7; i++) {
-    if (i <= ledToLight) {
-      led.setColorAt(i, 255, 0, 0);
-    } else {
-      led.setColorAt(i, 0, 0, 0);
+    switch (currentState) {
+      case SEG_A:
+        led.setColorAt(11, 0, 255, 0);
+        break;
+      case SEG_B:
+        for (int i = 0; i < 7; i++) {
+          led.setColorAt(i, 0, 0, 0);
+        }
+        led.setColorAt(10, 0, 255, 0);
+        break;
+      case SEG_C:
+        for (int i = 0; i < 7; i++) {
+          led.setColorAt(i, 0, 0, 0);
+        }
+        led.setColorAt(9, 0, 255, 0);
     }
+    led.show();
   }
-
-  led.show();
-}
-state dernierEtat = (state)-1;
-void gererLed() {
-  if (currentState == dernierEtat) return;
-  dernierEtat = currentState;
-
-  switch (currentState) {
-    case SEG_A:
-      led.setColorAt(11, 0, 255, 0);
-      break;
-    case PIVOT:
-      for (uint8_t i = 0; i < 7; i++) {
-        led.setColorAt(i, 0, 0, 0);
-      }
-      break;
-    case SEG_B:
-      led.setColorAt(10, 0, 255, 0);
-      break;
-  }
-  led.show();
-}
